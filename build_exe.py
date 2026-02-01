@@ -22,6 +22,7 @@ def build_with_nuitka():
             "python", "-m", "nuitka",
             "--standalone",
             "--onefile",
+            "--assume-yes-for-downloads",
             "--output-filename=h_side_init.exe",
             "--include-package=requests",
             "h_side_init.py"
