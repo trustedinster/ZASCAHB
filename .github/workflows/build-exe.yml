@@ -3,12 +3,14 @@ name: Build H-Side Init Executable
 on:
   push:
     tags:
-      - 'v*' # 当创建以v开头的标签时触发，例如 v1.0, v1.0.0 等
+      - 'v*'
   pull_request:
     branches: [ main, master ]
+
+# Top-level permissions: ensure contents (releases) can be created/modified
 permissions:
-  contents: write       # or read, depending on your needs
-  actions: write        # if needed
+  contents: write
+  packages: write
 
 jobs:
   build-exe:
@@ -33,17 +35,22 @@ jobs:
         python -m nuitka --standalone --onefile --assume-yes-for-downloads --output-filename=h_side_init.exe h_side_init.py
 
     - name: Upload artifact
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
       uses: actions/upload-artifact@v4
       with:
         name: h-side-init-executable
         path: h_side_init.exe
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        
+
   release:
     needs: build-exe
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    
+
+    # (Optional) job-level permissions override (keeps least-privilege)
+    permissions:
+      contents: write
+      packages: write
+
     steps:
     - name: Download artifacts
       uses: actions/download-artifact@v7
@@ -54,11 +61,13 @@ jobs:
     - name: Create Release
       id: create_release
       uses: actions/create-release@v1
+      # If you have a repository secret PAT called RELEASE_PUBLISH_TOKEN, swap the token below:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
+        # use the short tag name (e.g. "v1.2.3") instead of the full ref
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
         draft: false
         prerelease: false
 
