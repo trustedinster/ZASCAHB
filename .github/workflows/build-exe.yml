@@ -70,19 +70,11 @@ jobs:
       packages: write
 
     steps:
-    - name: Download compressed artifact if available
-      uses: actions/download-artifact@v7
-      with:
-        name: h-side-init-executable-compressed
-        path: .
-      continue-on-error: true  # 如果压缩版不可用则尝试下载原始版本
-
-    - name: Download original artifact if compressed not available
+    - name: Download artifacts
       uses: actions/download-artifact@v7
       with:
         name: h-side-init-executable
         path: .
-      if: failure()  # 只有在上一步失败时才下载原始版本
 
     - name: Create Release
       id: create_release
