@@ -41,7 +41,6 @@ jobs:
           --windows-company-name="Supercmd" `
           --windows-file-version=1.0.0 `
           --windows-product-version=1.0.0 `
-          --windows-file-origination-url="https://github.com/Supercmd/ZASCAHB" `
           --include-package=requests `
           --windows-uac-admin `
           --output-filename=h_side_init.exe h_side_init.py

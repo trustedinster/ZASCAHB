@@ -28,7 +28,6 @@ def build_with_nuitka():
             "--windows-company-name=Supercmd",
             "--windows-file-version=1.0.0",
             "--windows-product-version=1.0.0",
-            "--windows-file-origination-url=https://github.com/Supercmd/ZASCAHB",  # 你可以根据需要修改URL
             "--include-package=requests",
             "--windows-uac-admin",  # 请求管理员权限
             "--output-filename=h_side_init.exe",
