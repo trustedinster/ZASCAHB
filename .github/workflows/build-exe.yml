@@ -24,23 +24,40 @@ jobs:
       with:
         python-version: '3.10.11'
 
+    - name: Install UPX
+      run: |
+        # 下载UPX
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v5.1.0/upx-5.1.0-win64.zip" -OutFile "upx.zip"
+        Expand-Archive -Path "upx.zip" -DestinationPath "."
+        # 将UPX添加到PATH
+        $env:PATH += ";$PWD\upx-5.1.0-win64"
+        echo "$PWD\upx-5.1.0-win64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Download Icon
+      run: |
+        # 下载图标文件
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/trustedinster/ZASCA/refs/heads/master/static/img/favicon.ico" -OutFile "app_icon.ico"
+        echo "图标已下载到 app_icon.ico"
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install nuitka
+        pip install nuitka requests
 
-    - name: Build executable with Nuitka
+    - name: Build executable with Nuitka and UPX
       run: |
         python -m nuitka `
           --standalone `
           --onefile `
+          --upx-compress `
           --assume-yes-for-downloads `
           --windows-file-description="ZASCA主机端自动化部署程序" `
           --windows-product-name="ZASCA H-Side" `
           --windows-company-name="Supercmd" `
           --windows-file-version=1.0.0 `
           --windows-product-version=1.0.0 `
+          --windows-icon-from-ico=app_icon.ico `
           --include-package=requests `
           --windows-uac-admin `
           --output-filename=h_side_init.exe h_side_init.py

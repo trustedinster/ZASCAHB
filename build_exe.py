@@ -6,7 +6,29 @@ Nuitka打包脚本，用于将h_side_init.py打包成exe文件
 import subprocess
 import sys
 import os
+import platform
+import requests
 from pathlib import Path
+
+
+def download_icon():
+    """下载图标文件"""
+    icon_url = "https://raw.githubusercontent.com/trustedinster/ZASCA/refs/heads/master/static/img/favicon.ico"
+    icon_path = "app_icon.ico"
+    
+    try:
+        print("正在下载图标文件...")
+        response = requests.get(icon_url)
+        response.raise_for_status()
+        
+        with open(icon_path, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"✓ 图标文件已保存至 {icon_path}")
+        return icon_path
+    except Exception as e:
+        print(f"✗ 下载图标失败: {e}")
+        return None
 
 
 def build_with_nuitka():
@@ -16,6 +38,9 @@ def build_with_nuitka():
         if not os.path.exists("h_side_init.py"):
             print("错误: 找不到h_side_init.py文件")
             return False
+        
+        # 下载图标文件
+        icon_path = download_icon()
         
         # 构建命令
         cmd = [
@@ -30,9 +55,25 @@ def build_with_nuitka():
             "--windows-product-version=1.0.0",
             "--include-package=requests",
             "--windows-uac-admin",  # 请求管理员权限
+            "--enable-plugin=tk-inter",  # 如果使用tkinter的话
+        ]
+        
+        # 如果图标下载成功，添加图标参数
+        if icon_path and os.path.exists(icon_path):
+            cmd.append(f"--windows-icon-from-ico={icon_path}")
+            print(f"✓ 将使用图标: {icon_path}")
+        
+        cmd.extend([
             "--output-filename=h_side_init.exe",
             "h_side_init.py"
-        ]
+        ])
+        
+        # 检查是否有UPX可用
+        if is_upx_available():
+            cmd.insert(-2, "--upx-compress")  # 在输出文件名之前添加UPX压缩
+            print("✓ UPX可用，将使用UPX压缩")
+        else:
+            print("⚠ UPX不可用，跳过UPX压缩")
         
         print("正在使用Nuitka构建exe文件...")
         print(f"执行命令: {' '.join(cmd)}")
@@ -53,6 +94,17 @@ def build_with_nuitka():
         return False
     except Exception as e:
         print(f"构建过程中出现错误: {e}")
+        return False
+
+
+def is_upx_available():
+    """检查UPX是否可用"""
+    try:
+        # 尝试运行upx命令
+        result = subprocess.run(["upx", "--version"], capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        # 如果找不到upx命令，返回False
         return False
 
 
