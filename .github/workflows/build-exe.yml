@@ -30,7 +30,7 @@ jobs:
         python -m nuitka --standalone --onefile --output-filename=h_side_init.exe h_side_init.py
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: h-side-init-executable
         path: h_side_init.exe
@@ -42,7 +42,7 @@ jobs:
     
     steps:
     - name: Download artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: h-side-init-executable
         path: .
