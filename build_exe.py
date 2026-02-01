@@ -63,17 +63,17 @@ def build_with_nuitka():
             cmd.append(f"--windows-icon-from-ico={icon_path}")
             print(f"✓ 将使用图标: {icon_path}")
         
+        # 检查是否有UPX可用
+        if is_upx_available():
+            cmd.append("--upx-binary=upx")  # 使用UPX压缩
+            print("✓ UPX可用，将使用UPX压缩")
+        else:
+            print("⚠ UPX不可用，跳过UPX压缩")
+        
         cmd.extend([
             "--output-filename=h_side_init.exe",
             "h_side_init.py"
         ])
-        
-        # 检查是否有UPX可用
-        if is_upx_available():
-            cmd.insert(-2, "--upx-compress")  # 在输出文件名之前添加UPX压缩
-            print("✓ UPX可用，将使用UPX压缩")
-        else:
-            print("⚠ UPX不可用，跳过UPX压缩")
         
         print("正在使用Nuitka构建exe文件...")
         print(f"执行命令: {' '.join(cmd)}")

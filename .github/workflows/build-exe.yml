@@ -50,7 +50,6 @@ jobs:
         python -m nuitka `
           --standalone `
           --onefile `
-          --upx-compress `
           --assume-yes-for-downloads `
           --windows-file-description="ZASCA主机端自动化部署程序" `
           --windows-product-name="ZASCA H-Side" `
@@ -60,6 +59,7 @@ jobs:
           --windows-icon-from-ico=app_icon.ico `
           --include-package=requests `
           --windows-uac-admin `
+          --upx-binary=upx `
           --output-filename=h_side_init.exe h_side_init.py
 
     - name: Upload artifact
