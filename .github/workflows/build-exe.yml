@@ -1,0 +1,70 @@
+name: Build H-Side Init Executable
+
+on:
+  push:
+    tags:
+      - 'v*' # 当创建以v开头的标签时触发，例如 v1.0, v1.0.0 等
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install nuitka
+
+    - name: Build executable with Nuitka
+      run: |
+        python -m nuitka --standalone --onefile --output-filename=h_side_init.exe h_side_init.py
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: h-side-init-executable
+        path: h_side_init.exe
+        
+  release:
+    needs: build-exe
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: h-side-init-executable
+        path: .
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Asset
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./h_side_init.exe
+        asset_name: h_side_init.exe
+        asset_content_type: application/vnd.microsoft.portable-executable
