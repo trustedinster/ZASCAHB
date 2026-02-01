@@ -32,18 +32,18 @@ jobs:
 
     - name: Build executable with Nuitka
       run: |
-        python -m nuitka \
-          --standalone \
-          --onefile \
-          --assume-yes-for-downloads \
-          --windows-file-description="ZASCA主机端自动化部署程序" \
-          --windows-product-name="ZASCA H-Side" \
-          --windows-company-name="Supercmd" \
-          --windows-file-version=1.0.0 \
-          --windows-product-version=1.0.0 \
-          --windows-file-origination-url="https://github.com/Supercmd/ZASCAHB" \
-          --include-package=requests \
-          --windows-uac-admin \
+        python -m nuitka `
+          --standalone `
+          --onefile `
+          --assume-yes-for-downloads `
+          --windows-file-description="ZASCA主机端自动化部署程序" `
+          --windows-product-name="ZASCA H-Side" `
+          --windows-company-name="Supercmd" `
+          --windows-file-version=1.0.0 `
+          --windows-product-version=1.0.0 `
+          --windows-file-origination-url="https://github.com/Supercmd/ZASCAHB" `
+          --include-package=requests `
+          --windows-uac-admin `
           --output-filename=h_side_init.exe h_side_init.py
 
     - name: Upload artifact
