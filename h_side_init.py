@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 """
 ZASCA H端初始化脚本
-此脚本在H端运行，通过secret参数从C端获取所有必要的配置，
-包括CA根证书、服务器证书、WinRM配置等，并完成一次性初始化
+根据技术契约规范，H端负责解析配置、计算TOTP、发起网络请求、处理Token生命周期
 """
 
 import sys
 import os
-import subprocess
-import tempfile
 import json
 import base64
 import argparse
-from urllib.parse import urlparse
+import hashlib
+import hmac
+import pyotp
 import requests
-import platform
 import socket
-import re
-import shutil
-from datetime import datetime
+import time
 
 
 class HSideInitializer:
@@ -27,13 +23,15 @@ class HSideInitializer:
         self.decoded_secret = self._decode_secret(secret)
         self.c_side_url = self.decoded_secret.get('c_side_url')
         self.token = self.decoded_secret.get('token')
+        self.host_id = self.decoded_secret.get('host_id')
+        self.expires_at = self.decoded_secret.get('expires_at')
         self.hostname = socket.gethostname()
         self.ip_address = self._get_local_ip()
         
     def _decode_secret(self, secret):
         """
         解码从C端获取的secret
-        secret格式: base64(json({c_side_url: "...", token: "..."}))
+        secret格式: base64(json({c_side_url: "...", token: "...", host_id: "...", expires_at: "..."}))
         """
         try:
             decoded_bytes = base64.b64decode(secret)
@@ -53,276 +51,168 @@ class HSideInitializer:
         except Exception:
             return "127.0.0.1"
     
-    def _verify_environment(self):
-        """验证运行环境"""
-        if platform.system().lower() != 'windows':
-            raise EnvironmentError("此脚本只能在Windows系统上运行")
+    def _derive_totp_key(self):
+        """
+        根据技术契约规范计算TOTP密钥
+        1. 拼接字符串: input_string = token + "|" + host_id + "|" + expires_at
+        2. 哈希计算: raw_hash = HMAC-SHA256(key="SHARED_STATIC_SALT", message=input_string)
+        3. 截取与编码: 取raw_hash的前20个字节，进行Base32编码
+        """
+        SHARED_STATIC_SALT = "MY_SECRET_2024"  # 与C端约定的共享盐值
         
-        # 检查PowerShell是否可用
-        try:
-            result = subprocess.run(['powershell', '-Command', '$PSVersionTable.PSVersion'], 
-                                  capture_output=True, text=True, check=True)
-            print(f"✓ PowerShell版本: {result.stdout.strip()}")
-        except subprocess.CalledProcessError:
-            raise EnvironmentError("PowerShell不可用或版本过低")
+        input_string = f"{self.token}|{self.host_id}|{self.expires_at}"
+        raw_hash = hmac.new(
+            key=SHARED_STATIC_SALT.encode('utf-8'),
+            msg=input_string.encode('utf-8'),
+            digestmod=hashlib.sha256
+        ).digest()
         
-        # 检查WinRM服务状态
-        try:
-            result = subprocess.run(['powershell', '-Command', 'Get-Service WinRM'], 
-                                  capture_output=True, text=True, check=True)
-            print(f"✓ WinRM服务状态: {result.stdout.strip()}")
-        except subprocess.CalledProcessError:
-            print("⚠ WinRM服务未安装，将启用它")
+        # 取前20个字节并进行Base32编码
+        truncated_hash = raw_hash[:20]
+        k_totp = base64.b32encode(truncated_hash).decode('utf-8')
+        
+        return k_totp
     
-    def _enable_winrm_service(self):
-        """启用WinRM服务"""
-        print("1. 启用WinRM服务...")
-        ps_script = '''
-        Enable-PSRemoting -Force
-        Set-Service -Name WinRM -StartupType Automatic
-        Get-Service WinRM
-        '''
+    def _generate_and_display_totp(self):
+        """生成并显示TOTP码供用户输入到C端"""
+        k_totp = self._derive_totp_key()
         
-        result = subprocess.run(['powershell', '-Command', ps_script], 
-                              capture_output=True, text=True)
+        # 创建TOTP实例，使用技术契约中规定的参数
+        totp = pyotp.TOTP(
+            k_totp,
+            digits=6,           # 6位数字
+            interval=30         # 30秒时间步长
+        )
         
-        if result.returncode != 0:
-            raise RuntimeError(f"启用WinRM服务失败: {result.stderr}")
+        # 获取当前TOTP码
+        current_code = totp.now()
         
-        print("✓ WinRM服务已启用")
+        print("=" * 60)
+        print("ZASCA H端初始化 - TOTP验证阶段")
+        print(f"主机ID: {self.host_id}")
+        print(f"主机名: {self.hostname}")
+        print(f"IP地址: {self.ip_address}")
+        print("=" * 60)
+        print(f"请访问 C 端管理后台，输入主机 ID [{self.host_id}] 和验证码 [{current_code}] 进行激活")
+        print("激活完成后按回车键继续...")
+        
+        # 显示当前码的有效剩余时间
+        time_remaining = 30 - (int(time.time()) % 30)
+        print(f"当前验证码剩余有效时间: {time_remaining}秒")
+        
+        # 等待用户确认
+        input()
+        
+        return current_code
     
-    def _configure_winrm_https(self, certificate_thumbprint):
-        """配置WinRM HTTPS监听器"""
-        print("2. 配置WinRM HTTPS监听器...")
+    def _exchange_token(self):
+        """向C端发起token交换请求"""
+        print("正在向C端发起token交换请求...")
         
-        ps_script = f'''
-        $selectorset = @{{Transport="HTTPS"}}
-        Get-WSManInstance -ResourceURI winrm/config/listener -SelectorSet $selectorset -ErrorAction SilentlyContinue | Remove-WSManInstance
-
-        $resourceset = @{{Port="5986"; CertificateThumbprint="{certificate_thumbprint}"}}
-        New-WSManInstance -ResourceURI winrm/config/listener -SelectorSet $selectorset -ValueSet $resourceset
-
-        # 配置基本认证
-        Set-Item -Path "WSMan:\\localhost\\Service\\Auth\\Basic" -Value $true
-        Set-Item -Path "WSMan:\\localhost\\Service\\AllowUnencrypted" -Value $false
-        
-        # 重启WinRM服务
-        Restart-Service WinRM
-        '''
-        
-        result = subprocess.run(['powershell', '-Command', ps_script], 
-                              capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"配置WinRM HTTPS监听器失败: {result.stderr}")
-        
-        print("✓ WinRM HTTPS监听器已配置")
-    
-    def _configure_firewall(self):
-        """配置防火墙规则"""
-        print("3. 配置防火墙规则...")
-        
-        ps_script = '''
-        if (-not (Get-NetFirewallRule -Name "WinRM-HTTPS-In-TCP-Public" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "WinRM-HTTPS-In-TCP-Public" -DisplayName "WinRM HTTPS Inbound" -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -Profile Public,Private,Domain
-        }
-        '''
-        
-        result = subprocess.run(['powershell', '-Command', ps_script], 
-                              capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"配置防火墙规则失败: {result.stderr}")
-        
-        print("✓ 防火墙规则已配置")
-    
-    def _install_ca_certificate(self, ca_cert_pem):
-        """安装CA根证书"""
-        print("4. 安装CA根证书...")
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.crt', delete=False) as cert_file:
-            cert_file.write(ca_cert_pem)
-            cert_file_path = cert_file.name
-        
-        try:
-            ps_script = f'''
-            Import-Certificate -FilePath "{cert_file_path}" -CertStoreLocation Cert:\\LocalMachine\\Root
-            '''
-            
-            result = subprocess.run(['powershell', '-Command', ps_script], 
-                                  capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"安装CA根证书失败: {result.stderr}")
-            
-            print("✓ CA根证书已安装")
-        finally:
-            # 清理临时文件
-            os.unlink(cert_file_path)
-    
-    def _install_server_certificate(self, server_cert_pem, server_key_pem, pfx_data_b64):
-        """安装服务器证书"""
-        print("5. 安装服务器证书...")
-        
-        # 实际的PFX文件应该是二进制格式，我们需要正确处理
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as pfx_file:
-            pfx_file.write(base64.b64decode(pfx_data_b64))
-            pfx_file_path = pfx_file.name
-        
-        try:
-            ps_script = f'''
-            $certPass = ""  # 如果PFX有密码保护，则在此处指定
-            $securePass = ConvertTo-SecureString -String $certPass -Force -AsPlainText
-            Import-PfxCertificate -FilePath "{pfx_file_path}" -CertStoreLocation Cert:\\LocalMachine\\My -Password $securePass -Exportable
-            
-            # 获取刚导入的证书
-            $cert = Get-ChildItem -Path Cert:\\LocalMachine\\My | Where-Object {{$_.Subject -eq "CN={self.hostname}"}} | Select-Object -First 1
-            if ($cert) {{
-                $cert.Thumbprint
-            }} else {{
-                Write-Error "未能找到安装的证书"
-            }}
-            '''
-            
-            result = subprocess.run(['powershell', '-Command', ps_script], 
-                                  capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"安装服务器证书失败: {result.stderr}")
-            
-            # 获取证书指纹
-            thumbprint = result.stdout.strip()
-            if not thumbprint or "Error" in result.stderr:
-                raise RuntimeError(f"获取证书指纹失败: {result.stderr}")
-            
-            print(f"✓ 服务器证书已安装，指纹: {thumbprint}")
-            return thumbprint
-        finally:
-            # 清理临时文件
-            os.unlink(pfx_file_path)
-    
-    def _get_bootstrap_config(self):
-        """从C端获取初始化配置"""
-        print("正在从C端获取配置...")
-        
-        url = f"{self.c_side_url}/bootstrap/config/"
-        
-        payload = {
-            'auth_token': self.token,
-            'hostname': self.hostname,
-            'ip_address': self.ip_address
-        }
-        
-        try:
-            response = requests.post(url, json=payload, timeout=30)
-            
-            if response.status_code != 200:
-                raise RuntimeError(f"获取配置失败，状态码: {response.status_code}, 错误: {response.text}")
-            
-            result = response.json()
-            
-            if not result.get('success'):
-                raise RuntimeError(f"C端返回错误: {result.get('error', '未知错误')}")
-            
-            config_data = result.get('data', {})
-            print("✓ 成功获取C端配置")
-            return config_data
-            
-        except requests.RequestException as e:
-            raise RuntimeError(f"网络请求失败: {e}")
-        except json.JSONDecodeError:
-            raise RuntimeError(f"响应不是有效的JSON格式: {response.text}")
-    
-    def _report_completion_to_c_side(self, certificate_thumbprint):
-        """向C端报告初始化完成"""
-        print("向C端报告初始化完成...")
-        
-        url = f"{self.c_side_url}/bootstrap/status/"
-        
-        payload = {
-            'token': self.token,
-            'hostname': self.hostname,
-            'ip_address': self.ip_address,
-            'status': 'completed',
-            'certificate_thumbprint': certificate_thumbprint
-        }
+        url = f"{self.c_side_url}/api/exchange_token"
         
         headers = {
+            'Authorization': f'Bearer {self.token}',
             'Content-Type': 'application/json'
         }
         
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            
-            if response.status_code != 200:
-                print(f"⚠ 向C端报告状态失败，状态码: {response.status_code}")
-                print(f"  响应: {response.text}")
-                # 不抛出异常，因为配置已完成
-            else:
-                result = response.json()
-                if result.get('success'):
-                    print("✓ 成功向C端报告初始化完成")
-                else:
-                    print(f"⚠ C端返回状态报告错误: {result.get('error', '未知错误')}")
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                response = requests.post(url, headers=headers, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    session_token = result.get('session_token')
+                    expires_in = result.get('expires_in')
                     
-        except requests.RequestException as e:
-            print(f"⚠ 向C端报告状态时网络错误: {e}")
-        except json.JSONDecodeError:
-            print(f"⚠ C端响应不是有效的JSON格式: {response.text}")
+                    print("✓ Token交换成功!")
+                    print(f"  会话令牌: {session_token}")
+                    print(f"  有效期: {expires_in}秒")
+                    
+                    # 保存session token到本地配置
+                    self._save_session_token(session_token)
+                    
+                    return session_token
+                
+                elif response.status_code == 400:
+                    error_msg = response.text
+                    if "Wait To Active" in error_msg:
+                        print("⚠ 状态: 等待激活，请确认已在C端完成TOTP验证")
+                        time.sleep(5)  # 等待5秒后重试
+                        retry_count += 1
+                        continue
+                    else:
+                        print(f"❌ 请求错误 (400): {error_msg}")
+                        break
+                
+                elif response.status_code == 403:
+                    print("❌ 访问被拒绝 (403): 请检查TOTP是否输入正确，或Base64是否有效")
+                    break
+                
+                else:
+                    print(f"❌ 请求失败，状态码: {response.status_code}")
+                    print(f"  响应: {response.text}")
+                    break
+                    
+            except requests.exceptions.Timeout:
+                print(f"⚠ 请求超时，正在进行第 {retry_count + 1} 次重试...")
+                retry_count += 1
+                time.sleep(5)
+                
+            except requests.exceptions.RequestException as e:
+                print(f"⚠ 网络请求错误: {e}")
+                break
+        
+        if retry_count >= max_retries:
+            print("❌ 已达到最大重试次数，Token交换失败")
+            
+        raise RuntimeError("Token交换失败")
+    
+    def _save_session_token(self, session_token):
+        """保存session token到本地配置"""
+        config = {
+            'session_token': session_token,
+            'host_id': self.host_id,
+            'c_side_url': self.c_side_url,
+            'ip_address': self.ip_address
+        }
+        
+        # 保存到本地配置文件
+        config_path = 'h_side_config.json'
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        
+        print(f"✓ 会话令牌已保存到本地配置文件: {config_path}")
+    
+    def _activate_with_totp(self):
+        """执行TOTP激活流程"""
+        # 1. 生成并显示TOTP码
+        totp_code = self._generate_and_display_totp()
+        
+        # 2. 向C端发起token交换请求
+        session_token = self._exchange_token()
+        
+        print("=" * 60)
+        print("ZASCA H端初始化完成！")
+        print(f"✓ H端已激活，会话令牌: {session_token}")
+        print("✓ H端现在处于ZeroAgent状态，等待C端连接")
+        print("=" * 60)
+        
+        return session_token
     
     def initialize(self):
         """执行完整的初始化流程"""
-        print("=" * 60)
-        print("ZASCA H端一次性初始化开始")
-        print(f"主机名: {self.hostname}")
-        print(f"IP地址: {self.ip_address}")
-        print(f"C端地址: {self.c_side_url}")
-        print("=" * 60)
+        print("开始ZASCA H端初始化流程...")
         
         try:
-            # 1. 验证运行环境
-            self._verify_environment()
+            # 执行TOTP激活流程
+            session_token = self._activate_with_totp()
             
-            # 2. 从C端获取配置
-            config = self._get_bootstrap_config()
-            
-            # 3. 启用WinRM服务
-            self._enable_winrm_service()
-            
-            # 4. 安装CA根证书
-            ca_cert = config.get('ca_cert')
-            if not ca_cert:
-                raise ValueError("配置中缺少CA根证书")
-            self._install_ca_certificate(ca_cert)
-            
-            # 5. 安装服务器证书
-            pfx_data = config.get('pfx_data')
-            if not pfx_data:
-                raise ValueError("配置中缺少PFX证书数据")
-            thumbprint = self._install_server_certificate(
-                config.get('server_cert', ''), 
-                config.get('server_key', ''), 
-                pfx_data
-            )
-            
-            # 6. 配置WinRM HTTPS监听器
-            self._configure_winrm_https(thumbprint)
-            
-            # 7. 配置防火墙规则
-            self._configure_firewall()
-            
-            # 8. 向C端报告完成
-            self._report_completion_to_c_side(thumbprint)
-            
-            print("=" * 60)
-            print("ZASCA H端初始化完成！")
-            print("✓ WinRM服务已配置在端口 5986")
-            print(f"✓ 证书指纹: {thumbprint}")
-            print("✓ H端现在处于ZeroAgent状态，等待C端连接")
-            print("=" * 60)
-            
-            # 自毁脚本
-            self._self_destruct()
+            # 自毁脚本（如果需要）
+            # self._self_destruct()
             
         except Exception as e:
             print(f"❌ 初始化失败: {e}")
@@ -360,21 +250,17 @@ def main():
     
     if args.dry_run:
         print("Dry run模式: 将显示操作步骤但不会实际执行")
-        # 在dry run模式下，我们不实际执行任何操作
         initializer = HSideInitializer(args.secret)
         print(f"主机名: {initializer.hostname}")
         print(f"IP地址: {initializer.ip_address}")
         print(f"C端地址: {initializer.c_side_url}")
+        print(f"主机ID: {initializer.host_id}")
+        print(f"过期时间: {initializer.expires_at}")
         print("此模式下将执行以下操作:")
-        print("1. 验证运行环境")
-        print("2. 从C端获取配置")
-        print("3. 启用WinRM服务")
-        print("4. 安装CA根证书")
-        print("5. 安装服务器证书")
-        print("6. 配置WinRM HTTPS监听器")
-        print("7. 配置防火墙规则")
-        print("8. 向C端报告完成")
-        print("9. 自毁脚本")
+        print("1. 计算TOTP密钥")
+        print("2. 生成并显示TOTP码")
+        print("3. 向C端发起token交换请求")
+        print("4. 保存会话令牌")
         return
     
     try:
